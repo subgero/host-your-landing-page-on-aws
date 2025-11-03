@@ -226,7 +226,7 @@ Resources:
     Properties:
       # HostedZoneName: "usatv.lat."
       HostedZoneId: !Ref HostedZoneId
-      Name: "s3-host-landing-page.usatv.lat."
+      Name: !Sub "${SubDomainName}.${DomainName}."
       Type: A
       AliasTarget:
         DNSName: !GetAtt WebsiteDistribution.DomainName
