@@ -38,8 +38,97 @@ Parameters:
 Resources:
 
   ########################################################
+  # Roles
+  ########################################################
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-codebuild-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObjectAcl
+                Resource:
+                  - !Sub "${WebsiteBucket.Arn}/*"
+                  - !GetAtt WebsiteBucket.Arn
+                  - !Sub "${PipelineArtifactBucket.Arn}/*"
+                  - !GetAtt PipelineArtifactBucket.Arn
+              # - Effect: Allow
+              #   Action:
+              #     - kms:Decrypt
+              #     - kms:Encrypt
+              #     - kms:GenerateDataKey
+              #     - kms:DescribeKey
+              #   Resource: !Ref WebsiteKmsKey
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: "*"
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub "${WebsiteBucket.Arn}/*"
+                  - !GetAtt WebsiteBucket.Arn
+                  - !Sub "${PipelineArtifactBucket.Arn}/*"
+                  - !GetAtt PipelineArtifactBucket.Arn
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - iam:PassRole
+                  - codestar-connections:UseConnection
+                Resource: 
+                  - !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-pipeline
+                  - !GetAtt WebsiteCodeBuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+
+
+  ########################################################
   # KMS CMK
   ########################################################
+
   WebsiteKmsKey:
     Type: AWS::KMS::Key
     Properties:
@@ -68,7 +157,9 @@ Resources:
           - Sid: AllowCloudFrontUse
             Effect: Allow
             Principal:
-              Service: cloudfront.amazonaws.com
+              Service:
+              - cloudfront.amazonaws.com
+              - s3.amazonaws.com
             Action:
               - kms:Decrypt
               - kms:GenerateDataKey
@@ -77,7 +168,9 @@ Resources:
           - Sid: AllowCodeBuildRoleUse
             Effect: Allow
             Principal:
-              AWS: !Sub arn:aws:iam::${AWS::AccountId}:role/CodeBuildRole-for-website
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-codebuild-role
+                - !Sub arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-codepipeline-role
             Action:
               - kms:Decrypt
               - kms:Encrypt
@@ -114,31 +207,40 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowCloudFrontAccess
+          - Sid: AllowCloudFrontAccessViaOAC
             Effect: Allow
             Principal:
-              CanonicalUser: !GetAtt CloudFrontOAI.S3CanonicalUserId
+              Service: cloudfront.amazonaws.com
             Action: "s3:GetObject"
             Resource: !Sub "${WebsiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
 
   ########################################################
   # CloudFront Distribution
   ########################################################
-  CloudFrontOAI:
-    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
-    Properties:
-      CloudFrontOriginAccessIdentityConfig:
-        Comment: !Sub "OAI for ${AWS::StackName}"
 
   RecordSet:
     Type: AWS::Route53::RecordSet
     Properties:
-      HostedZoneName: !Sub "${DomainName}."
-      Name: !Sub ${SubDomainName}-${DomainName}
+      # HostedZoneName: "usatv.lat."
+      HostedZoneId: !Ref HostedZoneId
+      Name: "s3-host-landing-page.usatv.lat."
       Type: A
       AliasTarget:
         DNSName: !GetAtt WebsiteDistribution.DomainName
-        HostedZoneId: !Ref HostedZoneId  # CloudFront hosted zone ID
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        Description: !Sub "OAC for ${AWS::StackName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
 
   WebsiteDistribution:
     Type: AWS::CloudFront::Distribution
@@ -148,8 +250,8 @@ Resources:
         Origins:
           - Id: S3Origin
             DomainName: !GetAtt WebsiteBucket.DomainName
-            S3OriginConfig:
-              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOAI}"
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref CloudFrontOAC
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
@@ -163,56 +265,14 @@ Resources:
         ViewerCertificate:
           AcmCertificateArn: !Ref CertificateArn
           SslSupportMethod: sni-only
-          MinimumProtocolVersion: TLSv1.2_2019
-        Aliases: [!Ref DomainName]
+          MinimumProtocolVersion: TLSv1.2_2021
+        Aliases: 
+          - !Sub "${SubDomainName}.${DomainName}"
         DefaultRootObject: index.html
         HttpVersion: http2
         PriceClass: PriceClass_100
 
-  ########################################################
-  # CodeBuild Role
-  ########################################################
-  CodeBuildRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub ${AWS::StackName}-codebuild-role
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codebuild.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: CodeBuildAccess
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - s3:PutObjectAcl
-                Resource:
-                  - !Sub "${WebsiteBucket.Arn}/*"
-                  - !GetAtt WebsiteBucket.Arn
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                  - kms:Encrypt
-                  - kms:GenerateDataKey
-                  - kms:DescribeKey
-                Resource: !Ref WebsiteKmsKey
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "arn:aws:logs:*:*:*"
-              - Effect: Allow
-                Action: cloudfront:CreateInvalidation
-                Resource: "*"
+
 
   ########################################################
   # CodeBuild Project
@@ -259,36 +319,6 @@ Resources:
             files:
               - '**/*'
 
-  ########################################################
-  # CodePipeline Role
-  ########################################################
-  CodePipelineRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codepipeline.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: CodePipelineAccess
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:GetObjectVersion
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - codebuild:StartBuild
-                  - codebuild:BatchGetBuilds
-                  - iam:PassRole
-                Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-pipeline
 
   ########################################################
   # Artifact Bucket for CodePipeline
@@ -363,3 +393,11 @@ Outputs:
   CodePipelineName:
     Value: !Ref WebsitePipeline
     Description: "CodePipeline name"
+
+  CodeBuildRoleArn:
+    Value: !GetAtt CodeBuildRole.Arn
+    Description: "ARN of the CodeBuild IAM Role"  
+
+  CodePipelineRoleArn:
+    Value: !GetAtt CodePipelineRole.Arn
+    Description: "ARN of the CodePipeline IAM Role"

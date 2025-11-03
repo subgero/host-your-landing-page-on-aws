@@ -17,6 +17,7 @@ Repositorio con
 - AWS CodePipeline
 - AWS CodeBuild
 - AWS CloudFormation
+- AWS KMS
 
 
 ## Steps
@@ -45,8 +46,12 @@ https://aws.amazon.com/codebuild/
 AWS CloudFormation
 https://aws.amazon.com/cloudformation/
 
+AWS KMS
+https://aws.amazon.com/kms
+
 SplideJs
 https://splidejs.com/integration/react-splide/
 
 Free Stock Images
 https://www.pexels.com/search/MOVIE/
+
