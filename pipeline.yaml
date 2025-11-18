@@ -34,6 +34,75 @@ Parameters:
   HostedZoneId:
     Type: String
     Description: "Hosted Zone ID for the domain in Route 53"
+  SenderEmail:
+    Type: String
+    Description: "Email address to send emails from (verified in SES)"
+  DestinationEmail:
+    Type: String
+    Description: "Email address to send emails"
+  CompanyName:
+    Type: String
+    Description: "Company name to display on the landing page"
+  Title:
+    Type: String
+    Description: "Title of the landing page"
+  Slogan:
+    Type: String
+    Description: "Slogan to display on the landing page"
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Domain and Certificate Settings"
+        Parameters:
+          - SubDomainName
+          - DomainName
+          - CertificateArn
+          - HostedZoneId
+      - Label:
+          default: "GitHub Source Settings"
+        Parameters:
+          - GitHubConnectionArn
+          - GitHubOwner
+          - GitHubRepo
+          - GitHubBranch
+      - Label:
+          default: "Email Settings"
+        Parameters:
+          - SenderEmail
+          - DestinationEmail
+      - Label:
+          default: "Landing Page Settings"
+        Parameters:
+          - CompanyName
+          - Title
+          - Slogan
+    ParameterLabels:
+      CertificateArn:
+        default: "ACM Certificate ARN"
+      SubDomainName:
+        default: "Subdomain Name"
+      DomainName:
+        default: "Domain Name"
+      GitHubConnectionArn:
+        default: "GitHub Connection ARN"
+      GitHubOwner:
+        default: "GitHub Owner"
+      GitHubRepo:
+        default: "GitHub Repository"
+      GitHubBranch:
+        default: "GitHub Branch"
+      SENDER_EMAIL:
+        default: "Sender Email Address"
+      DESTINATION_EMAIL:
+        default: "Destination Email Address"
+      COMPANY_NAME:
+        default: "Company Name"
+      TITLE:
+        default: "Landing Page Title"
+      SLOGAN:
+        default: "Landing Page Slogan"
 
 Resources:
 
@@ -293,6 +362,14 @@ Resources:
             Value: !Ref WebsiteBucket
           - Name: CLOUDFRONT_DISTRIBUTION_ID
             Value: !Ref WebsiteDistribution
+          - Name: LAMBDA_URL
+            Value: !GetAtt MyLambdaUrl.FunctionUrl
+          - Name: COMPANY_NAME
+            Value: !Ref CompanyName
+          - Name: TITLE
+            Value: !Ref Title
+          - Name: SLOGAN
+            Value: !Ref Slogan
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -309,6 +386,10 @@ Resources:
             build:
               commands:
                 - echo "Building project"
+                - echo "REACT_APP_API_CONTACT_FORM_URL=$LAMBDA_URL" >> .env
+                - echo "REACT_APP_COMPANY_NAME=$COMPANY_NAME" >> .env
+                - echo "REACT_APP_TITLE=$TITLE" >> .env
+                - echo "REACT_APP_SLOGAN=$SLOGAN" >> .env
                 - if [ -f package.json ]; then npm run build || true; fi
                 - echo "Syncing files to S3"
                 - cd build
@@ -376,6 +457,96 @@ Resources:
               Configuration:
                 ProjectName: !Ref WebsiteCodeBuildProject
               RunOrder: 1
+
+  MyLambdaUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref SESLambdaFunction
+      AuthType: NONE
+      Cors:
+        AllowOrigins: ["*"]
+        AllowMethods: ["POST"]
+
+  LambdaPermissionForUrl:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SESLambdaFunction
+      Principal: "*"
+      Action: lambda:InvokeFunctionUrl
+      FunctionUrlAuthType: NONE
+
+  SESLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: my-lambda
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SENDER_EMAIL: !Ref SenderEmail
+          DESTINATION_EMAIL: !Ref DestinationEmail
+      Code:
+        ZipFile: |
+
+          import json
+          import boto3
+
+          def lambda_handler(event, context):
+              
+
+              ses = boto3.client('ses')
+              
+              content = json.loads(event['body'])
+
+              destination = os.environ['DESTINATION_EMAIL']
+              sender = os.environ['SENDER_EMAIL']
+
+              response = ses.send_email(
+                Source=sender,
+                Destination={
+                  'ToAddresses': [destination]
+                },
+                Message={
+                  'Subject': {
+                    'Data': content['subject'],
+                    'Charset': 'utf8'
+                  },
+                  'Body': {
+                    'Text': {
+                      'Data': content['message'],
+                      'Charset': 'utf8'
+                    }
+                  }
+                }
+              )
+              print(response)
+              // TODO: send Html email, send a cc to user.
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ses-lambda-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: lambda-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ses:sendEmail
+                  - ses:sendRawEmail
+                Resource: "*"
 
 Outputs:
   WebsiteBucketName:
